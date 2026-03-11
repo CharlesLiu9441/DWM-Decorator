@@ -1,0 +1,22 @@
+# Force Color Scheme
+# Acceptable value: "Dark", "Light", "NoChange"
+force_color_scheme = "NoChange"
+
+# Force Border Radius
+# Acceptable value: "Round", "Rect", "NoChange"
+force_border_radius = "NoChange"
+
+# --- Border Color Settings ---
+# Acceptable value: "#RRGGBB", "rgb(r,g,b)", etc.
+
+# border color of active normal window
+active_border_color = "#00aaff"
+
+# border color of active topmost window
+active_topmost_border_color = "#ffba00"
+
+# border color of inactive normal window
+inactive_border_color = "#808080"
+
+# border color of inactive topmost window
+inactive_topmost_border_color = "#775500"
