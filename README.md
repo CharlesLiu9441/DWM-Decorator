@@ -36,5 +36,5 @@ inactive_topmost_border_color = "#775500"
 - Use `Ctrl + Numpad 2` to increase transparency
 - Use `Ctrl + Numpad 8` to decrease transparency
 ## TODO List
-[ ] Add configuration of key bindings
-[ ] Add process blacklist
+- [ ] Add configuration of key bindings
+- [ ] Add process blacklist
