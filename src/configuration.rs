@@ -3,6 +3,7 @@ use csscolorparser::Color;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use tracing::{error, info, warn};
 use windows::Win32::Foundation::COLORREF;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -54,10 +55,10 @@ impl From<RawConfig> for DecodedConfig {
         Self {
             force_color_scheme: value.force_color_scheme as i32,
             force_border_radius: value.force_border_radius as i32,
-            active_border_color: color_to_colorref(value.active_border_color),
-            active_topmost_border_color: color_to_colorref(value.active_topmost_border_color),
-            inactive_border_color: color_to_colorref(value.inactive_border_color),
-            inactive_topmost_border_color: color_to_colorref(value.inactive_topmost_border_color),
+            active_border_color: color_to_color_ref(value.active_border_color),
+            active_topmost_border_color: color_to_color_ref(value.active_topmost_border_color),
+            inactive_border_color: color_to_color_ref(value.inactive_border_color),
+            inactive_topmost_border_color: color_to_color_ref(value.inactive_topmost_border_color),
         }
     }
 }
@@ -66,7 +67,7 @@ impl Default for DecodedConfig {
         RawConfig::default().into()
     }
 }
-fn color_to_colorref(color: Color) -> COLORREF {
+fn color_to_color_ref(color: Color) -> COLORREF {
     let [r, g, b, _] = color.to_rgba8();
     COLORREF(((b as u32) << 16) | ((g as u32) << 8) | (r as u32))
 }
@@ -78,17 +79,23 @@ fn get_config_path() -> PathBuf {
 }
 pub fn load_config() -> DecodedConfig {
     let config_path = get_config_path();
+    info!("Loading configuration from {}", config_path.display());
     if !config_path.exists() {
-        fs::write(config_path.clone(), include_str!("default_config.toml")).unwrap_or(());
+        fs::write(config_path.clone(), include_str!("default_config.toml"))
+            .unwrap_or_else(|error| error!(%error,"Error generating default config.toml"));
     }
     let settings = Config::builder()
-        .add_source(File::with_name(
-            config_path.to_str().unwrap_or("./config.toml"),
-        ))
+        .add_source(File::from(config_path))
         .build()
-        .unwrap_or_default();
+        .unwrap_or_else(|error| {
+            warn!(%error,"Could not load configuration file; using default.");
+            Config::default()
+        });
     settings
         .try_deserialize::<RawConfig>()
-        .unwrap_or_default()
+        .unwrap_or_else(|error| {
+            warn!(%error,"Could not parse config; using default.");
+            RawConfig::default()
+        })
         .into()
 }

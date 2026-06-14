@@ -1,6 +1,6 @@
 [package]
 name = "DWM-Decorator"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 
 [dependencies]
@@ -8,6 +8,9 @@ config = "0.15.19"
 csscolorparser = { version = "0.8.3" ,features = ["default","serde"]}
 handy-keys = "0.2.4"
 serde = { version = "1.0.228" , features = ["derive"]}
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23" ,features = ["env-filter"]}
 windows = { version = "0.62.2" , features = ["Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Dwm",
@@ -18,10 +21,3 @@ windows = { version = "0.62.2" , features = ["Win32_Foundation",
     "Win32_System_Threading",
     "Win32_System_Com",
 ]}
-
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-panic = "abort"
-strip = true
