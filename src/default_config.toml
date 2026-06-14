@@ -20,3 +20,13 @@ inactive_border_color = "#808080"
 
 # border color of inactive topmost window
 inactive_topmost_border_color = "#775500"
+
+# --- Key Configuration ---
+key_toggle_topmost = "Ctrl+Keypad0"
+key_increase_transparency = "Ctrl+Keypad2"
+key_decrease_transparency = "Ctrl+Keypad8"
+
+# --- Optional Configuration ---
+# you can use active_title_color, inactive_title_color, active_text_color, inactive_text_color
+# to configure the color of title of the window and text on the title.
+# these configurations are optional

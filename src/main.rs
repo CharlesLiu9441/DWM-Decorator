@@ -2,33 +2,29 @@
 mod configuration;
 pub mod logger;
 
-// TODO: add key configuration
-use handy_keys::{HotkeyManager, HotkeyState};
-use std::fmt::Display;
+use handy_keys::{Hotkey, HotkeyManager, HotkeyState};
 use std::{
     cmp::PartialEq,
     collections::HashMap,
-    sync::{
-        Arc, OnceLock,
-        atomic::{AtomicI32, Ordering},
-        mpsc::*,
-    },
+    fmt::Display,
+    sync::{Arc, Condvar, Mutex, OnceLock, mpsc::*},
 };
 use tracing::{error, info, warn};
-use windows::Win32::System::Com::CoUninitialize;
 use windows::{
     Win32::{
         Foundation::*,
         Graphics::Dwm::*,
         System::{
-            Com::{COINIT_APARTMENTTHREADED, CoInitializeEx},
+            Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize},
             Threading::*,
         },
         UI::{Accessibility::*, WindowsAndMessaging::*},
     },
     core::*,
 };
-
+struct TransparencyState {
+    delta: i32,
+}
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 enum KeyAction {
     Topmost,
@@ -57,12 +53,10 @@ static TX: OnceLock<Sender<(SendHWND, SendHWND)>> = OnceLock::new();
 static CONFIG: OnceLock<configuration::DecodedConfig> = OnceLock::new();
 
 fn main() -> handy_keys::Result<()> {
-    let _guard = logger::init_logger();
+    let guard = logger::init_logger();
     logger::setup_panic_hook();
-    let transparency_delta: Arc<AtomicI32> = Arc::new(AtomicI32::new(0));
-    CONFIG
-        .set(configuration::load_config())
-        .expect("CONFIG setting failed");
+    let config = configuration::load_config();
+    CONFIG.set(config).expect("CONFIG setting failed");
     unsafe {
         SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS).unwrap_or_else(|error| {
             warn!(%error, "Failed to set high priority class...");
@@ -87,18 +81,18 @@ fn main() -> handy_keys::Result<()> {
     };
     let manager = HotkeyManager::new()?;
     let mut action_map = HashMap::new();
-    let mut keymap: HashMap<KeyAction, String> = HashMap::new();
-    keymap.insert(KeyAction::Topmost, String::from("Ctrl+Keypad0"));
+    let mut keymap: HashMap<KeyAction, Hotkey> = HashMap::new();
+    keymap.insert(KeyAction::Topmost, config.key_toggle_topmost);
     keymap.insert(
         KeyAction::IncreaseTransparency,
-        String::from("Ctrl+Keypad2"),
+        config.key_increase_transparency,
     );
     keymap.insert(
         KeyAction::DecreaseTransparency,
-        String::from("Ctrl+Keypad8"),
+        config.key_decrease_transparency,
     );
     for (action, key) in &keymap {
-        match manager.register(key.parse()?) {
+        match manager.register(*key) {
             Ok(key_id) => {
                 action_map.insert(key_id, *action);
             }
@@ -107,7 +101,7 @@ fn main() -> handy_keys::Result<()> {
             }
         }
     }
-    let transparency_delta_2 = transparency_delta.clone();
+    let transparency_state = Arc::new((Mutex::new(TransparencyState { delta: 0 }), Condvar::new()));
     std::thread::spawn(move || {
         let mut need_uninitialize = false;
         match unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) } {
@@ -142,27 +136,33 @@ fn main() -> handy_keys::Result<()> {
             unsafe { CoUninitialize() }
         }
     });
+    let transparency_state_consumer = transparency_state.clone();
     std::thread::spawn(move || {
+        let (lock, cvar) = &*transparency_state_consumer;
         let mut press_duration = 0;
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            let transparency_delta = transparency_delta.load(Ordering::Relaxed);
-            if transparency_delta != 0 {
-                press_duration = (press_duration + 1).clamp(0, 1000);
-                change_alpha(
-                    transparency_delta * ((press_duration as f64).ln().max(1.0).round() as i32),
-                )
-            } else {
+            let mut state = lock.lock().unwrap();
+            while state.delta == 0 {
                 press_duration = 0;
+                state = cvar.wait(state).unwrap();
             }
+            let transparency_delta = state.delta;
+            drop(state);
+            press_duration = (press_duration + 1).clamp(0, 1000);
+            change_alpha(
+                transparency_delta * ((press_duration as f64).ln().max(1.0).round() as i32),
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
     });
     std::thread::spawn(move || {
+        let (lock, cvar) = &*transparency_state;
         loop {
             let event = manager.recv();
             match event {
                 Ok(event) => {
                     if let Some(action) = action_map.get(&event.id) {
+                        info!(%action, ?event.state, "Received event for hotkey");
                         match action {
                             KeyAction::Topmost => {
                                 if event.state == HotkeyState::Pressed {
@@ -170,18 +170,22 @@ fn main() -> handy_keys::Result<()> {
                                 }
                             }
                             KeyAction::DecreaseTransparency => {
-                                if event.state == HotkeyState::Pressed {
-                                    transparency_delta_2.fetch_add(1, Ordering::Relaxed);
+                                let mut state = lock.lock().unwrap();
+                                state.delta += if event.state == HotkeyState::Pressed {
+                                    1
                                 } else {
-                                    transparency_delta_2.fetch_sub(1, Ordering::Relaxed);
-                                }
+                                    -1
+                                };
+                                cvar.notify_one();
                             }
                             KeyAction::IncreaseTransparency => {
-                                if event.state == HotkeyState::Pressed {
-                                    transparency_delta_2.fetch_sub(1, Ordering::Relaxed);
+                                let mut state = lock.lock().unwrap();
+                                state.delta += if event.state == HotkeyState::Pressed {
+                                    -1
                                 } else {
-                                    transparency_delta_2.fetch_add(1, Ordering::Relaxed);
-                                }
+                                    1
+                                };
+                                cvar.notify_one();
                             }
                         }
                     }
@@ -201,6 +205,7 @@ fn main() -> handy_keys::Result<()> {
         }
         let _ = UnhookWinEvent(win_event_hook);
     }
+    drop(guard);
     Ok(())
 }
 fn change_alpha(delta: i32) {
@@ -210,6 +215,16 @@ fn change_alpha(delta: i32) {
         if (ex_style & WS_EX_LAYERED.0 as isize) == 0 {
             ex_style |= WS_EX_LAYERED.0 as isize;
             SetWindowLongPtrW(top_hwnd, GWL_EXSTYLE, ex_style);
+            SetWindowPos(
+                top_hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE,
+            )
+            .unwrap_or_else(|error| warn!(%error,"fail to refresh window"));
             SetLayeredWindowAttributes(top_hwnd, COLORREF(0), 255, LWA_ALPHA).unwrap_or_else(
                 |error| warn!(%error,"Error changing window into layered window attributes."),
             );
@@ -258,7 +273,9 @@ fn toggle_topmost() {
     }
 }
 extern "system" fn enum_window_proc(hwnd: HWND, _lparam: LPARAM) -> BOOL {
-    send_window(hwnd, unsafe { GetForegroundWindow() });
+    if unsafe { IsWindowVisible(hwnd).as_bool() } {
+        send_window(hwnd, unsafe { GetForegroundWindow() });
+    }
     true.into()
 }
 unsafe extern "system" fn win_event_proc(
@@ -326,9 +343,6 @@ fn proc_hwnd(hwnd: HWND, foreground: HWND, last_focus: &mut Option<HWND>) {
             &config.force_border_radius,
         );
     }
-    let color_active_text = COLORREF(0xfff8f0);
-    let color_inactive_text = COLORREF(0xcfc8c0);
-    let color_caption = COLORREF(0x202020);
     if hwnd == foreground && Some(hwnd) != *last_focus {
         if let Some(old_focus) = last_focus.filter(|h| !h.is_invalid()) {
             let old_border = if is_topmost(&old_focus) {
@@ -336,16 +350,21 @@ fn proc_hwnd(hwnd: HWND, foreground: HWND, last_focus: &mut Option<HWND>) {
             } else {
                 config.inactive_border_color
             };
-            set_attr(old_focus, DWMWA_TEXT_COLOR, &color_inactive_text);
+            set_attr(old_focus, DWMWA_TEXT_COLOR, &config.inactive_text_color);
             set_attr(old_focus, DWMWA_BORDER_COLOR, &old_border);
         }
         *last_focus = Some(hwnd);
     }
     let is_active = hwnd == foreground;
     let text_color = if is_active {
-        color_active_text
+        config.active_text_color
     } else {
-        color_inactive_text
+        config.inactive_text_color
+    };
+    let captain_color = if is_active {
+        config.active_title_color
+    } else {
+        config.inactive_title_color
     };
 
     let border_color = match (is_active, is_topmost(&hwnd)) {
@@ -354,7 +373,11 @@ fn proc_hwnd(hwnd: HWND, foreground: HWND, last_focus: &mut Option<HWND>) {
         (false, true) => config.inactive_topmost_border_color,
         (false, false) => config.inactive_border_color,
     };
-    set_attr(hwnd, DWMWA_TEXT_COLOR, &text_color);
     set_attr(hwnd, DWMWA_BORDER_COLOR, &border_color);
-    set_attr(hwnd, DWMWA_CAPTION_COLOR, &color_caption);
+    if let Some(text_color) = text_color {
+        set_attr(hwnd, DWMWA_TEXT_COLOR, &text_color);
+    }
+    if let Some(captain_color) = captain_color {
+        set_attr(hwnd, DWMWA_CAPTION_COLOR, &captain_color);
+    }
 }

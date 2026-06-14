@@ -1,5 +1,4 @@
-use std::panic;
-use std::path::PathBuf;
+use std::{panic, path::PathBuf};
 use tracing::error;
 use tracing_subscriber::{Registry, fmt, prelude::*};
 
