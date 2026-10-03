@@ -22,6 +22,11 @@ inactive_border_color = "#808080"
 inactive_topmost_border_color = "#775500"
 
 # --- Key Configuration ---
+# Whether the configured hotkeys should be intercepted (blocked from reaching
+# other applications) or only listened to.
+# true  = intercept hotkeys (they will not be delivered to other applications)
+# false = listen only (key presses are still delivered to other applications)
+intercept_hotkeys = false
 key_toggle_topmost = "Ctrl+Keypad0"
 key_increase_transparency = "Ctrl+Keypad2"
 key_decrease_transparency = "Ctrl+Keypad8"

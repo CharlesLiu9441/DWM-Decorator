@@ -1,6 +1,6 @@
+use crate::hotkey::{Hotkey, Key, Modifiers};
 use config::{Config, File};
 use csscolorparser::Color;
-use handy_keys::{Hotkey, Key, Modifiers};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
 use tracing::{error, info, warn};
@@ -31,6 +31,8 @@ struct RawConfig {
     key_toggle_topmost: String,
     key_increase_transparency: String,
     key_decrease_transparency: String,
+    #[serde(default)]
+    intercept_hotkeys: bool,
     active_title_color: Option<Color>,
     inactive_title_color: Option<Color>,
     active_text_color: Option<Color>,
@@ -48,6 +50,7 @@ impl Default for RawConfig {
             key_toggle_topmost: "Ctrl+Keypad0".to_string(),
             key_increase_transparency: "Ctrl+Keypad2".to_string(),
             key_decrease_transparency: "Ctrl+Keypad8".to_string(),
+            intercept_hotkeys: false,
             active_title_color: None,
             inactive_title_color: None,
             active_text_color: None,
@@ -66,6 +69,7 @@ pub struct DecodedConfig {
     pub key_toggle_topmost: Hotkey,
     pub key_increase_transparency: Hotkey,
     pub key_decrease_transparency: Hotkey,
+    pub intercept_hotkeys: bool,
     pub active_title_color: Option<COLORREF>,
     pub inactive_title_color: Option<COLORREF>,
     pub active_text_color: Option<COLORREF>,
@@ -80,18 +84,22 @@ impl From<RawConfig> for DecodedConfig {
             active_topmost_border_color: color_to_color_ref(value.active_topmost_border_color),
             inactive_border_color: color_to_color_ref(value.inactive_border_color),
             inactive_topmost_border_color: color_to_color_ref(value.inactive_topmost_border_color),
-            key_toggle_topmost: value.key_toggle_topmost.parse().unwrap_or_else(|error| {
-                warn!(%error,"Fail to parse key configuration for topmost; using default one");
-                Hotkey::new(Modifiers::CTRL, Key::Keypad0).unwrap()
-            }),
-            key_decrease_transparency: value.key_decrease_transparency.parse().unwrap_or_else(|error| {
-                warn!(%error,"Fail to parse key configuration for decrease transparency; using default one");
-                Hotkey::new(Modifiers::CTRL, Key::Keypad8).unwrap()
-            }),
-            key_increase_transparency: value.key_increase_transparency.parse().unwrap_or_else(|error| {
-                warn!(%error,"Fail to parse key configuration for increase transparency; using default one");
-                Hotkey::new(Modifiers::CTRL, Key::Keypad2).unwrap()
-            }),
+            key_toggle_topmost: parse_hotkey(
+                &value.key_toggle_topmost,
+                default_hotkey(Key::Keypad0),
+                "key_toggle_topmost",
+            ),
+            key_decrease_transparency: parse_hotkey(
+                &value.key_decrease_transparency,
+                default_hotkey(Key::Keypad8),
+                "key_decrease_transparency",
+            ),
+            key_increase_transparency: parse_hotkey(
+                &value.key_increase_transparency,
+                default_hotkey(Key::Keypad2),
+                "key_increase_transparency",
+            ),
+            intercept_hotkeys: value.intercept_hotkeys,
             active_title_color: option_color_to_color_ref(value.active_title_color),
             inactive_title_color: option_color_to_color_ref(value.inactive_title_color),
             active_text_color: option_color_to_color_ref(value.active_text_color),
@@ -102,6 +110,29 @@ impl From<RawConfig> for DecodedConfig {
 impl Default for DecodedConfig {
     fn default() -> Self {
         RawConfig::default().into()
+    }
+}
+fn default_hotkey(key: Key) -> Hotkey {
+    Hotkey {
+        modifiers: Modifiers::CTRL,
+        key: Some(key),
+    }
+}
+
+fn parse_hotkey(text: &str, fallback: Hotkey, action: &str) -> Hotkey {
+    match text.parse::<Hotkey>() {
+        Ok(hotkey) if hotkey.key.is_some() => hotkey,
+        Ok(_) => {
+            warn!(
+                action,
+                "Hotkey must contain a key; using the default hotkey"
+            );
+            fallback
+        }
+        Err(error) => {
+            warn!(%error, action, "Failed to parse hotkey; using the default hotkey");
+            fallback
+        }
     }
 }
 fn color_to_color_ref(color: Color) -> COLORREF {

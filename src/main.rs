@@ -1,14 +1,10 @@
 #![windows_subsystem = "windows"]
 mod configuration;
+mod hotkey;
 pub mod logger;
 
-use handy_keys::{Hotkey, HotkeyManager, HotkeyState};
-use std::{
-    cmp::PartialEq,
-    collections::HashMap,
-    fmt::Display,
-    sync::{Arc, Condvar, Mutex, OnceLock, mpsc::*},
-};
+use hotkey::HotkeyListener;
+use std::sync::{OnceLock, mpsc::*};
 use tracing::{error, info, warn};
 use windows::{
     Win32::{
@@ -22,37 +18,16 @@ use windows::{
     },
     core::*,
 };
-struct TransparencyState {
-    delta: i32,
-}
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
-enum KeyAction {
-    Topmost,
-    IncreaseTransparency,
-    DecreaseTransparency,
-}
-impl Display for KeyAction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match *self {
-            KeyAction::Topmost => {
-                write!(f, "Topmost")
-            }
-            KeyAction::IncreaseTransparency => {
-                write!(f, "IncreaseTransparency")
-            }
-            KeyAction::DecreaseTransparency => {
-                write!(f, "DecreaseTransparency")
-            }
-        }
-    }
-}
 #[derive(Clone, Copy)]
 struct SendHWND(HWND);
 unsafe impl Send for SendHWND {}
 static TX: OnceLock<Sender<(SendHWND, SendHWND)>> = OnceLock::new();
 static CONFIG: OnceLock<configuration::DecodedConfig> = OnceLock::new();
+const IDX_TOPMOST: usize = 0;
+const IDX_INCREASE_TRANSPARENCY: usize = 1;
+const IDX_DECREASE_TRANSPARENCY: usize = 2;
 
-fn main() -> handy_keys::Result<()> {
+fn main() {
     let guard = logger::init_logger();
     logger::setup_panic_hook();
     let config = configuration::load_config();
@@ -79,29 +54,24 @@ fn main() -> handy_keys::Result<()> {
             WINEVENT_OUTOFCONTEXT,
         )
     };
-    let manager = HotkeyManager::new()?;
-    let mut action_map = HashMap::new();
-    let mut keymap: HashMap<KeyAction, Hotkey> = HashMap::new();
-    keymap.insert(KeyAction::Topmost, config.key_toggle_topmost);
-    keymap.insert(
-        KeyAction::IncreaseTransparency,
+    let hotkeys = [
+        config.key_toggle_topmost,
         config.key_increase_transparency,
-    );
-    keymap.insert(
-        KeyAction::DecreaseTransparency,
         config.key_decrease_transparency,
-    );
-    for (action, key) in &keymap {
-        match manager.register(*key) {
-            Ok(key_id) => {
-                action_map.insert(key_id, *action);
-            }
-            Err(error) => {
-                error!(%error, action=%action, "Failed to register hotkey");
-            }
+    ];
+    match HotkeyListener::new(&hotkeys, config.intercept_hotkeys) {
+        Ok(listener) => {
+            info!(
+                ?hotkeys,
+                intercept = config.intercept_hotkeys,
+                "Keyboard hotkeys registered"
+            );
+            std::thread::spawn(move || run_hotkey_loop(listener));
+        }
+        Err(error) => {
+            error!(%error, "Failed to install the keyboard hook; hotkeys are disabled");
         }
     }
-    let transparency_state = Arc::new((Mutex::new(TransparencyState { delta: 0 }), Condvar::new()));
     std::thread::spawn(move || {
         let mut need_uninitialize = false;
         match unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) } {
@@ -136,67 +106,6 @@ fn main() -> handy_keys::Result<()> {
             unsafe { CoUninitialize() }
         }
     });
-    let transparency_state_consumer = transparency_state.clone();
-    std::thread::spawn(move || {
-        let (lock, cvar) = &*transparency_state_consumer;
-        let mut press_duration = 0;
-        loop {
-            let mut state = lock.lock().unwrap();
-            while state.delta == 0 {
-                press_duration = 0;
-                state = cvar.wait(state).unwrap();
-            }
-            let transparency_delta = state.delta;
-            drop(state);
-            press_duration = (press_duration + 1).clamp(0, 1000);
-            change_alpha(
-                transparency_delta * ((press_duration as f64).ln().max(1.0).round() as i32),
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-    });
-    std::thread::spawn(move || {
-        let (lock, cvar) = &*transparency_state;
-        loop {
-            let event = manager.recv();
-            match event {
-                Ok(event) => {
-                    if let Some(action) = action_map.get(&event.id) {
-                        info!(%action, ?event.state, "Received event for hotkey");
-                        match action {
-                            KeyAction::Topmost => {
-                                if event.state == HotkeyState::Pressed {
-                                    toggle_topmost()
-                                }
-                            }
-                            KeyAction::DecreaseTransparency => {
-                                let mut state = lock.lock().unwrap();
-                                state.delta += if event.state == HotkeyState::Pressed {
-                                    1
-                                } else {
-                                    -1
-                                };
-                                cvar.notify_one();
-                            }
-                            KeyAction::IncreaseTransparency => {
-                                let mut state = lock.lock().unwrap();
-                                state.delta += if event.state == HotkeyState::Pressed {
-                                    -1
-                                } else {
-                                    1
-                                };
-                                cvar.notify_one();
-                            }
-                        }
-                    }
-                }
-                Err(error) => {
-                    error!(%error, "Error getting key event");
-                    break;
-                }
-            }
-        }
-    });
     unsafe {
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
@@ -206,7 +115,46 @@ fn main() -> handy_keys::Result<()> {
         let _ = UnhookWinEvent(win_event_hook);
     }
     drop(guard);
-    Ok(())
+}
+fn run_hotkey_loop(listener: HotkeyListener) {
+    let mut topmost_was_pressed = false;
+    let mut increase_was_pressed = false;
+    let mut decrease_was_pressed = false;
+    let mut press_duration: u32 = 0;
+    loop {
+        let topmost_pressed = listener.is_pressed(IDX_TOPMOST);
+        if topmost_pressed && !topmost_was_pressed {
+            info!(action = "toggle_topmost", "Hotkey pressed");
+            toggle_topmost();
+        }
+        topmost_was_pressed = topmost_pressed;
+
+        let increase_pressed = listener.is_pressed(IDX_INCREASE_TRANSPARENCY);
+        if increase_pressed && !increase_was_pressed {
+            info!(action = "increase_transparency", "Hotkey pressed");
+        }
+        increase_was_pressed = increase_pressed;
+
+        let decrease_pressed = listener.is_pressed(IDX_DECREASE_TRANSPARENCY);
+        if decrease_pressed && !decrease_was_pressed {
+            info!(action = "decrease_transparency", "Hotkey pressed");
+        }
+        decrease_was_pressed = decrease_pressed;
+
+        let direction = match (increase_pressed, decrease_pressed) {
+            (true, false) => -1,
+            (false, true) => 1,
+            _ => 0,
+        };
+        if direction == 0 {
+            press_duration = 0;
+        } else {
+            press_duration = (press_duration + 1).clamp(0, 1000);
+            change_alpha(direction * ((press_duration as f64).ln().max(1.0).round() as i32));
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 fn change_alpha(delta: i32) {
     unsafe {

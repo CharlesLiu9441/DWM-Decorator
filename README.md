@@ -1,15 +1,21 @@
 # DWM-Decorator
+
 This project uses Windows api and provides border colorization, toggling window topmost, and adjust transparency.
+
 ## Core Features
+
 - Change window border color depending on whether the window is active and whether the window is topmost.
 - Change window title color and title text color depending on whether the window is active (optional feature)
 - Use hotkey to make foreground window topmost.
 - Use hotkey to adjust foreground window transparency.
 - Extreme low RAM usage.
-## Logging
+  
+  ## Logging
 - The log file will be generated as `dwm-decorator.log.<date>`
-## Configuration
+  
+  ## Configuration
 - The config file will be generated as `config.toml`.
+
 ```toml
 # Force Color Scheme
 # Acceptable value: "Dark", "Light", "NoChange"
@@ -35,6 +41,9 @@ inactive_border_color = "#808080"
 inactive_topmost_border_color = "#775500"
 
 # --- Key Configuration ---
+# Whether to intercept hotkeys or only listen to them
+# true: block hotkeys from other applications; false: listen only
+intercept_hotkeys = false
 key_toggle_topmost = "Ctrl+Keypad0"
 key_increase_transparency = "Ctrl+Keypad2"
 key_decrease_transparency = "Ctrl+Keypad8"
@@ -51,13 +60,18 @@ key_decrease_transparency = "Ctrl+Keypad8"
 
 # these configurations are optional
 ```
+
 ## Default Key Bindings
+
 - Use `Ctrl + Numpad 0` to toggle topmost
 - Use `Ctrl + Numpad 2` to increase transparency
 - Use `Ctrl + Numpad 8` to decrease transparency
-## System Requirement
+  
+  ## System Requirement
 - $\ge$ Windows 11 (Build 22000)
-## TODO List
+  
+  ## TODO List
+
 - [ ] Add process blacklist
 
 ---
@@ -107,6 +121,9 @@ inactive_border_color = "#808080"
 inactive_topmost_border_color = "#775500"
 
 # --- 按键配置 ---
+# 拦截快捷键还是仅监听
+# true: 拦截快捷键（不再传递给其他应用）；false: 仅监听
+intercept_hotkeys = false
 key_toggle_topmost = "Ctrl+Keypad0"
 key_increase_transparency = "Ctrl+Keypad2"
 key_decrease_transparency = "Ctrl+Keypad8"
@@ -122,7 +139,6 @@ key_decrease_transparency = "Ctrl+Keypad8"
 # inactive_text_color = "#c0c8cf"
 
 # 以上配置为可选配置
-
 ```
 
 ## 默认键位绑定
